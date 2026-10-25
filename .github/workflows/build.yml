@@ -1,0 +1,90 @@
+name: Build Husk IPA (with fix)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      # This repo: holds the fixed husk-tl-bionic-io.c and this workflow.
+      - uses: actions/checkout@v4
+        with:
+          path: fix
+
+      # The Husk source the fix was made against (pinned so the overlay below matches it).
+      - uses: actions/checkout@v4
+        with:
+          repository: Leviidev/Husk
+          ref: 3b87cbc79079aadf7feb31d99988b8cdb2910750
+          path: husk
+
+      - name: Apply fix
+        run: |
+          test -f fix/husk-tl-bionic-io.c
+          grep -q partial_reserve fix/husk-tl-bionic-io.c
+          cp fix/husk-tl-bionic-io.c husk/src/translation-layer-next/husk-tl-bionic-io.c
+          grep -c partial_reserve husk/src/translation-layer-next/husk-tl-bionic-io.c
+          echo "fix applied"
+
+      # ANGLE (WebKit's copy) fails on the macos-15 Xcode with -Werror: clang's
+      # thread-safety checks reject std::mutex in src/common/SimpleMutex.h.
+      # These are only warnings-as-errors, so turn the checks off for the ANGLE
+      # build instead of touching ANGLE's source.
+      - name: Relax ANGLE thread-safety errors
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          f = "husk/scripts/build_angle_ios.sh"
+          s = open(f).read()
+          flag = "-Wno-unguarded-availability-new"
+          extra = " -Wno-thread-safety-attributes -Wno-thread-safety-analysis"
+          s, n = re.subn(re.escape(flag) + "'", flag + extra + "'", s)
+          assert n == 2, f"expected 2 flag lines, patched {n}"
+          s, m = re.subn(r'^( *)(IPHONEOS_DEPLOYMENT_TARGET="15\.5" \\)$',
+                         r'\1\2\n\1GCC_TREAT_WARNINGS_AS_ERRORS=NO \\',
+                         s, flags=re.M)
+          assert m == 1, "deployment target line not found"
+          open(f, "w").write(s)
+          PY
+          bash -n husk/scripts/build_angle_ios.sh
+          grep -n -E "thread-safety|GCC_TREAT" husk/scripts/build_angle_ios.sh
+          echo "ANGLE script patched"
+
+      - name: Install build tools
+        run: |
+          brew install meson ninja pkg-config xcodegen qemu
+          rustup target add aarch64-apple-ios || (curl https://sh.rustup.rs -sSf | sh -s -- -y && ~/.cargo/bin/rustup target add aarch64-apple-ios)
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Restore build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            husk/build
+            husk/third_party
+          key: husk-build-${{ runner.os }}-${{ hashFiles('husk/scripts/**') }}
+          restore-keys: |
+            husk-build-${{ runner.os }}-
+
+      - name: Build
+        working-directory: husk
+        run: ./scripts/ci_build.sh build/Husk.ipa
+
+      - name: Save build cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            husk/build
+            husk/third_party
+          key: husk-build-${{ runner.os }}-${{ hashFiles('husk/scripts/**') }}-${{ github.run_id }}
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Husk-ipa
+          path: |
+            husk/build/Husk.ipa
+            husk/build/Husk.tipa
