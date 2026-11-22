@@ -33,20 +33,20 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Install Rust toolchain and iOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
       - name: Show Apple build environment
         run: |
           xcodebuild -version
           xcodebuild -showsdks
           rustc --version
           cargo --version
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Install Rust iOS targets
-        run: |
-          rustup update stable
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 
       - name: Download iOS system frameworks
         working-directory: litter
