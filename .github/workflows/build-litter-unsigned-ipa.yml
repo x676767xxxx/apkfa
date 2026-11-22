@@ -20,6 +20,8 @@ jobs:
       LITTER_REF: main
       SCHEME: Litter
       CONFIGURATION: Release
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
     steps:
       - name: Checkout IPA builder repository
         uses: actions/checkout@v4
@@ -33,10 +35,15 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install Rust toolchain and iOS targets
+      - name: Install Rust toolchain and iOS device target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-ios
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: litter/shared/rust-bridge/codex-bridge -> target
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -52,9 +59,21 @@ jobs:
         working-directory: litter
         run: ./apps/ios/scripts/download-ios-system.sh
 
-      - name: Build on-device Codex Rust bridge
+      - name: Build on-device Codex Rust bridge (device slice only)
         working-directory: litter
-        run: ./apps/ios/scripts/build-rust.sh
+        timeout-minutes: 35
+        run: |
+          set -euxo pipefail
+          ./apps/ios/scripts/sync-codex.sh
+          cd shared/rust-bridge/codex-bridge
+          rustup target add aarch64-apple-ios
+          cargo rustc --release --target aarch64-apple-ios --crate-type staticlib -vv
+          test -s target/aarch64-apple-ios/release/libcodex_bridge.a
+          mkdir -p ../../../../apps/ios/Frameworks
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libcodex_bridge.a \
+            -headers include/ \
+            -output ../../../../apps/ios/Frameworks/codex_bridge.xcframework
 
       - name: Generate Xcode project
         working-directory: litter
@@ -69,6 +88,7 @@ jobs:
 
       - name: Archive local Litter app without Apple signing
         working-directory: litter
+        timeout-minutes: 30
         run: |
           xcodebuild archive \
             -project apps/ios/Litter.xcodeproj \
@@ -82,6 +102,7 @@ jobs:
 
       - name: Package unsigned IPA
         run: |
+          set -euxo pipefail
           APP="$RUNNER_TEMP/Litter.xcarchive/Products/Applications/Litter.app"
           test -d "$APP" || { echo "Litter.app missing from archive"; exit 1; }
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
