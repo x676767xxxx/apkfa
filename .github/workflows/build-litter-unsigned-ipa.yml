@@ -73,7 +73,7 @@ jobs:
           xcodebuild -create-xcframework \
             -library target/aarch64-apple-ios/release/libcodex_bridge.a \
             -headers include/ \
-            -output ../../../../apps/ios/Frameworks/codex_bridge.xcframework
+            -output ../../../apps/ios/Frameworks/codex_bridge.xcframework
 
       - name: Generate Xcode project
         working-directory: litter
