@@ -1,0 +1,104 @@
+name: Build Litter local Codex unsigned IPA
+
+on:
+  push:
+    branches:
+      - ci/litter-unsigned-ipa
+    paths:
+      - .github/workflows/build-litter-unsigned-ipa.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      LITTER_REPOSITORY: tungthedev/codex-mobile
+      LITTER_REF: main
+      SCHEME: Litter
+      CONFIGURATION: Release
+    steps:
+      - name: Checkout IPA builder repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Litter source and Codex submodule
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LITTER_REPOSITORY }}
+          ref: ${{ env.LITTER_REF }}
+          path: litter
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Show Apple build environment
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+          rustc --version
+          cargo --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Install Rust iOS targets
+        run: |
+          rustup update stable
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+
+      - name: Download iOS system frameworks
+        working-directory: litter
+        run: ./apps/ios/scripts/download-ios-system.sh
+
+      - name: Build on-device Codex Rust bridge
+        working-directory: litter
+        run: ./apps/ios/scripts/build-rust.sh
+
+      - name: Generate Xcode project
+        working-directory: litter
+        run: xcodegen generate --spec apps/ios/project.yml --project apps/ios
+
+      - name: Resolve Swift packages
+        working-directory: litter
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project apps/ios/Litter.xcodeproj \
+            -scheme "${SCHEME}"
+
+      - name: Archive local Litter app without Apple signing
+        working-directory: litter
+        run: |
+          xcodebuild archive \
+            -project apps/ios/Litter.xcodeproj \
+            -scheme "${SCHEME}" \
+            -configuration "${CONFIGURATION}" \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Litter.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned IPA
+        run: |
+          APP="$RUNNER_TEMP/Litter.xcarchive/Products/Applications/Litter.app"
+          test -d "$APP" || { echo "Litter.app missing from archive"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/Litter.app"
+          cd "$RUNNER_TEMP/ipa"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/Litter-local-unsigned.ipa" Payload
+          cd "$GITHUB_WORKSPACE"
+          test -s Litter-local-unsigned.ipa
+          shasum -a 256 Litter-local-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/Litter.xcarchive" Litter.xcarchive.zip
+
+      - name: Upload IPA and build diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: Litter-local-unsigned-IPA
+          path: |
+            Litter-local-unsigned.ipa
+            Litter.xcarchive.zip
+          if-no-files-found: error
+          retention-days: 14
